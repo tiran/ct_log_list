@@ -1,0 +1,108 @@
+#!/usr/bin/env python3
+"""Generator for OpenSSL ct_log_list.cnf
+
+Generate a certificate transparency log list for OpenSSL 1.1.1 and newer.
+
+This script is a simplified version of print_log_list.py from
+https://github.com/google/certificate-transparency/. It neither verifies
+JSON schema nor signatures, but only depends on stdlib modules and is
+Python 3 compatible.
+
+https://www.openssl.org/docs/man1.1.1/man3/CTLOG_STORE_new.html
+https://www.openssl.org/docs/man1.1.1/man3/SSL_CTX_set_ctlog_list_file.html
+https://www.openssl.org/docs/man1.1.1/man3/SSL_CTX_set_ct_validation_callback.html
+
+Copyright 2018 Christian Heimes <christian@python.org>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+IN THE SOFTWARE.
+"""
+# pylint: disable=C0103,C0111,W0613,W0703
+import argparse
+import collections
+import datetime
+import json
+import ssl
+import sys
+from urllib.request import urlopen, Request
+
+CHROME_CT_LOG = "https://www.gstatic.com/ct/log_list/log_list.json"
+
+HEADER = """\
+# OpenSSL certificate transparency config file
+# Source: {source}
+# Generated: {now}
+"""
+
+parser = argparse.ArgumentParser(
+    description="Generator for OpenSSL ct_log_list.cnf"
+)
+parser.add_argument("--log-url", type=str, default=CHROME_CT_LOG)
+parser.add_argument(
+    "outfile", nargs="?", type=argparse.FileType("w"), default=sys.stdout
+)
+
+
+def download(args):
+    ctx = ssl.create_default_context()
+    req = Request(args.log_url)
+    try:
+        return urlopen(req, context=ctx)
+    except Exception as e:
+        parser.exit(1, f"Failed to download {args.log_url}: {e}\n")
+
+
+def parse_response(args, response):
+    ct = json.load(response)
+    entries = collections.OrderedDict()
+
+    for log_entry in ct["logs"]:
+        log_id = log_entry["url"]
+        # port and IPv6
+        log_id = log_id.replace(":", "_").replace("[", "").replace("]", "")
+        entries[log_id] = (log_entry["description"], log_entry["key"])
+
+    return entries
+
+
+def print_output(args, entries):
+    print(
+        HEADER.format(
+            source=args.log_url,
+            now=datetime.datetime.utcnow().strftime("%Y-%m-%dZ%H:%M:%S"),
+        ),
+        file=args.outfile,
+    )
+    print("enabled_logs = ", ", ".join(entries), file=args.outfile)
+    print("", file=args.outfile)
+    for log_entry, (desc, key) in entries.items():
+        print(f"[{log_entry}]", file=args.outfile)
+        print(f"description = {desc}", file=args.outfile)
+        print(f"key = {key}", file=args.outfile)
+        print("", file=args.outfile)
+
+
+def main():
+    args = parser.parse_args()
+    response = download(args)
+    entries = parse_response(args, response)
+    print_output(args, entries)
+
+
+if __name__ == "__main__":
+    main()
